@@ -1,0 +1,86 @@
+
+DELIMITER $$
+
+CREATE PROCEDURE LisaHaale(
+    IN in_eesnimi VARCHAR(50),
+    IN in_perenimi VARCHAR(50),
+    IN in_otsus INT,
+    IN in_haaletuse_id INT
+)
+BEGIN
+    DECLARE otsus_val ENUM('poolt','vastu');
+
+    -- Kontrollime, kas antud eesnimi ja perenimega isik on andmebaasis
+    IF EXISTS (SELECT * FROM HAALETUS WHERE eesnimi = in_eesnimi AND perenimi = in_perenimi) THEN
+        -- Kontrollime, kas antud hääletuse ID eksisteerib ka TULEMUSED tabelis
+        IF EXISTS (SELECT * FROM TULEMUSED WHERE id = in_haaletuse_id) THEN
+            -- Määrame otsuse väärtuse sõltuvalt hääletusest
+            IF in_otsus = 1 THEN
+                SET otsus_val = 'poolt';
+            ELSE
+                SET otsus_val = 'vastu';
+            END IF;
+
+            -- Lisame hääletuse HAALETUS tabelisse koos praeguse ajaga
+            UPDATE HAALETUS SET otsus = otsus_val, otsus_id = in_haaletuse_id, haalte_aeg = NOW()
+            WHERE eesnimi = in_eesnimi AND perenimi = in_perenimi;
+
+            -- Kui protseduur töötab edukalt, kuvame teate
+            SELECT 'Hääl edukalt lisatud HAALETUS tabelisse.';
+        ELSE
+            -- Kui antud hääletuse ID ei leita TULEMUSED tabelist, kuvame veateate
+            SELECT 'Antud hääletuse ID ei eksisteeri TULEMUSED tabelis. Palun kontrollige hääletuse ID-d.';
+        END IF;
+    ELSE
+        -- Kui antud eesnime ja perenimega isikut HAALETUS tabelis ei leita, kuvame veateate
+        SELECT 'Isikut andmebaasis ei leitud. Palun kontrollige eesnime ja perenime.';
+    END IF;
+END$$
+
+DELIMITER ;
+
+CREATE TRIGGER LogVoteTrigger AFTER UPDATE ON HAALETUS
+FOR EACH ROW
+BEGIN
+    IF OLD.otsus IS NULL AND NEW.otsus IS NOT NULL THEN
+        INSERT INTO LOGI (tegevus, aeg)
+        VALUES (CONCAT(NEW.eesnimi, ' ', NEW.perenimi, ' hääletas ', NEW.otsus, ' hääletuse ID-ga ', NEW.otsus_id), NOW());
+    END IF;
+END$$
+
+
+CREATE TRIGGER UpdateVoteResultsTrigger AFTER UPDATE ON HAALETUS
+FOR EACH ROW
+BEGIN
+    -- Kui uus otsus on "poolt"
+    IF NEW.otsus = 'poolt' THEN
+        -- Suurenda vastava hääletuse poolt_haalte_arvu
+        UPDATE TULEMUSED
+        SET poolt_haalte_arv = poolt_haalte_arv + 1
+        WHERE id = NEW.otsus_id;
+
+        -- Suurenda kõigi teiste hääletuste vastu_haalte_arvu
+        UPDATE TULEMUSED
+        SET vastu_haalte_arv = vastu_haalte_arv - 1
+        WHERE id <> NEW.otsus_id;
+    ELSE
+        -- Vastasel juhul suurenda vastu_haalte_arvu vastava hääletuse korral
+        UPDATE TULEMUSED
+        SET vastu_haalte_arv = vastu_haalte_arv + 1
+        WHERE id = NEW.otsus_id;
+
+        -- Vähenda vastu_haalte_arvu kõigi teiste hääletuste korral
+        UPDATE TULEMUSED
+        SET poolt_haalte_arv = poolt_haalte_arv - 1
+        WHERE id <> NEW.otsus_id;
+    END IF;
+
+    -- Uuenda hääletamise algusaega, kui see pole veel määratud
+    IF (SELECT h_alguse_aeg FROM TULEMUSED WHERE id = NEW.otsus_id) IS NULL THEN
+        UPDATE TULEMUSED
+        SET h_alguse_aeg = NEW.haalte_aeg
+        WHERE id = NEW.otsus_id;
+    END IF;
+END$$
+
+DELIMITER ;
